@@ -1,0 +1,22 @@
+[package]
+name = "ccusage-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Fast Rust CLI reporting Claude Code token usage and costs from local JSONL transcripts"
+license = "MIT"
+repository = "https://github.com/JoeLuker/ccusage-rs"
+
+[[bin]]
+name = "ccusage-rs"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+clap = { version = "4", features = ["derive"] }
+rayon = "1.12.0"
+
+[profile.release]
+lto = true
+strip = true
