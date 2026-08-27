@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# grind-verify: fast per-turn gate for ccusage-rs.
+# Green = lint-clean (clippy -D warnings, includes full typecheck/build) + all tests pass.
+# cargo fmt --check omitted: the codebase is deliberately hand-formatted (compact
+# PRICES table etc.) and has never been rustfmt-clean.
+# nix flake check omitted: full release rebuild, too slow for an every-turn gate.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+cargo clippy --all-targets -- -D warnings
+cargo test
