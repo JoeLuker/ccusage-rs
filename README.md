@@ -30,6 +30,7 @@ cargo build --release   # -> target/release/ccusage-rs
 ccusage-rs                  # daily report (default)
 ccusage-rs monthly
 ccusage-rs session          # per-session, ordered by last activity
+ccusage-rs project          # per-project directory, ordered by cost
 ccusage-rs daily --breakdown        # per-model rows under each period
 ccusage-rs daily --since 2026-08-01 --until 2026-08-23
 ccusage-rs daily --json

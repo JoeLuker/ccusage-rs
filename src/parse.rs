@@ -104,11 +104,26 @@ pub fn config_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
-/// All session transcript files under the dirs' projects/ trees.
-pub fn discover(dirs: &[PathBuf]) -> Vec<PathBuf> {
+/// All session transcript files under the dirs' projects/ trees, each
+/// paired with its project: the FIRST path component under projects/.
+/// Subagent transcripts nest deeper (<project>/<session>/subagents/
+/// agent-*.jsonl), so the nearest parent dir would mis-attribute every one
+/// of them to a literal "subagents" project.
+pub fn discover(dirs: &[PathBuf]) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
     for dir in dirs {
-        walk(&dir.join("projects"), &mut out);
+        let root = dir.join("projects");
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+        for f in files {
+            let project = f
+                .strip_prefix(&root)
+                .ok()
+                .and_then(|rel| rel.components().next())
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .unwrap_or_default();
+            out.push((project, f));
+        }
     }
     out.sort();
     out
@@ -131,10 +146,10 @@ pub type DedupKey = (String, String);
 /// Parse all files in parallel, then merge sequentially in path-sorted
 /// order with cross-file deduplication (a resumed session rewrites the
 /// same messages into its continuation file).
-pub fn parse_all(files: &[PathBuf]) -> Vec<Record> {
+pub fn parse_all(files: &[(String, PathBuf)]) -> Vec<Record> {
     use rayon::prelude::*;
     let per_file: Vec<Vec<(Option<DedupKey>, Record)>> =
-        files.par_iter().map(|f| parse_file(f)).collect();
+        files.par_iter().map(|(p, f)| parse_file(f, p)).collect();
     let mut seen: HashMap<DedupKey, usize> = HashMap::new();
     let mut out = Vec::new();
     for (key, record) in per_file.into_iter().flatten() {
@@ -159,15 +174,10 @@ pub fn parse_all(files: &[PathBuf]) -> Vec<Record> {
 /// record in place: duplicate writes are not identical when a turn is
 /// still accumulating iterations (the first write carries pass 1, later
 /// writes carry passes 1+2+...), so first-seen undercounts input/output.
-pub fn parse_file(path: &Path) -> Vec<(Option<DedupKey>, Record)> {
+pub fn parse_file(path: &Path, project: &str) -> Vec<(Option<DedupKey>, Record)> {
     let mut out = Vec::new();
     let Ok(file) = std::fs::File::open(path) else { return out };
     let reader = std::io::BufReader::with_capacity(1 << 20, file);
-    let project = path
-        .parent()
-        .and_then(Path::file_name)
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
     let session = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -211,7 +221,7 @@ pub fn parse_file(path: &Path) -> Vec<(Option<DedupKey>, Record)> {
         let record = Record {
             ts: ts.with_timezone(&Utc),
             model,
-            project: project.clone(),
+            project: project.to_string(),
             session: entry.session_id.unwrap_or_else(|| session.clone()),
             input,
             output,
@@ -232,20 +242,38 @@ mod tests {
 
     const LINE: &str = r#"{"type":"assistant","timestamp":"2026-08-23T18:36:01.792Z","requestId":"req_1","sessionId":"sess-a","message":{"id":"msg_1","model":"claude-opus-5","usage":{"input_tokens":2,"cache_creation_input_tokens":63193,"cache_read_input_tokens":0,"output_tokens":115,"cache_creation":{"ephemeral_1h_input_tokens":63193,"ephemeral_5m_input_tokens":0}}}}"#;
 
-    fn parse_str(lines: &str) -> Vec<Record> {
+    fn test_dir() -> PathBuf {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static SEQ: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
+        std::env::temp_dir().join(format!(
             "ccusage-rs-test-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, Ordering::SeqCst)
-        ));
-        std::fs::create_dir_all(dir.join("proj")).unwrap();
-        let f = dir.join("proj/sess-a.jsonl");
-        std::fs::write(&f, lines).unwrap();
-        let out = parse_all(&[f]);
+        ))
+    }
+
+    /// Writes a transcript at the real layout (projects/proj/sess-a.jsonl)
+    /// and runs it through discover + parse_all, so tests exercise the same
+    /// path production takes.
+    fn parse_str(lines: &str) -> Vec<Record> {
+        let dir = test_dir();
+        std::fs::create_dir_all(dir.join("projects/proj")).unwrap();
+        std::fs::write(dir.join("projects/proj/sess-a.jsonl"), lines).unwrap();
+        let out = parse_all(&discover(&[dir.clone()]));
         std::fs::remove_dir_all(&dir).ok();
         out
+    }
+
+    #[test]
+    fn subagent_transcripts_attribute_to_their_project() {
+        let dir = test_dir();
+        let deep = dir.join("projects/proj/sess-a/subagents");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("agent-x.jsonl"), format!("{LINE}\n")).unwrap();
+        let recs = parse_all(&discover(&[dir.clone()]));
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].project, "proj", "not the literal 'subagents' dir");
     }
 
     #[test]

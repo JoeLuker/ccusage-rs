@@ -37,6 +37,16 @@ enum Command {
     Monthly,
     /// Usage aggregated per session file
     Session,
+    /// Usage aggregated per project directory, ordered by cost
+    Project,
+}
+
+/// What the group key means — drives the table header and row order.
+#[derive(Clone, Copy, PartialEq)]
+enum KeyKind {
+    Period,
+    Session,
+    Project,
 }
 
 #[derive(Default, Clone)]
@@ -116,6 +126,7 @@ fn main() {
             Command::Daily => local_date.format("%Y-%m-%d").to_string(),
             Command::Monthly => format!("{:04}-{:02}", local_date.year(), local_date.month()),
             Command::Session => format!("{}/{}", r.project, r.session),
+            Command::Project => r.project.clone(),
         };
         // Cost mode "auto": trust a recorded costUSD when present, else
         // calculate from tokens x the static price table.
@@ -131,7 +142,12 @@ fn main() {
     if cli.json {
         print_json(&groups);
     } else {
-        print_table(&groups, cli.breakdown, matches!(cli.command, Some(Command::Session)));
+        let kind = match cli.command.as_ref().unwrap_or(&Command::Daily) {
+            Command::Session => KeyKind::Session,
+            Command::Project => KeyKind::Project,
+            _ => KeyKind::Period,
+        };
+        print_table(&groups, cli.breakdown, kind);
     }
 }
 
@@ -181,13 +197,26 @@ fn commas(n: u64) -> String {
     out
 }
 
-fn print_table(groups: &BTreeMap<String, Agg>, breakdown: bool, by_session: bool) {
-    // Session reports get wide keys; order those by recency instead of name.
+fn print_table(groups: &BTreeMap<String, Agg>, breakdown: bool, kind: KeyKind) {
+    // Session reports get wide keys; order those by recency instead of
+    // name. Project reports answer "where does the spend go", so order by
+    // cost, biggest first.
     let mut rows: Vec<(&String, &Agg)> = groups.iter().collect();
-    if by_session {
-        rows.sort_by_key(|(_, a)| a.last_ts);
+    match kind {
+        KeyKind::Session => rows.sort_by_key(|(_, a)| a.last_ts),
+        KeyKind::Project => rows.sort_by(|(ka, a), (kb, b)| {
+            b.cost
+                .partial_cmp(&a.cost)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| ka.cmp(kb))
+        }),
+        KeyKind::Period => {}
     }
-    let key_header = if by_session { "Session" } else { "Period" };
+    let key_header = match kind {
+        KeyKind::Session => "Session",
+        KeyKind::Project => "Project",
+        KeyKind::Period => "Period",
+    };
     // Breakdown rows render as "  └ <model>" (4 display cells + name),
     // so the key column must fit those too or the row overflows and
     // shifts every later column.
