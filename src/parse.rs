@@ -10,6 +10,7 @@
 //! 2. Synthetic rows (`model: "<synthetic>"`) carry zeroed usage and no
 //!    request id — they are skipped, not priced.
 
+use crate::usage::{Billed, RawUsage};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -34,52 +35,13 @@ struct RawMessage {
     usage: Option<RawUsage>,
 }
 
-#[derive(Deserialize, Default)]
-struct RawUsage {
-    #[serde(default)]
-    input_tokens: u64,
-    #[serde(default)]
-    output_tokens: u64,
-    #[serde(default)]
-    cache_creation_input_tokens: u64,
-    #[serde(default)]
-    cache_read_input_tokens: u64,
-    cache_creation: Option<RawCacheCreation>,
-    /// Fable-class multi-pass turns (server-side tool iterations): the
-    /// top-level cache fields aggregate all passes, but top-level
-    /// input/output reflect only the FINAL pass — billing is the sum.
-    /// Verified on real transcripts: input 4 vs iteration sum 142,478.
-    iterations: Option<Vec<RawIteration>>,
-}
-
-#[derive(Deserialize, Default)]
-struct RawIteration {
-    #[serde(default)]
-    input_tokens: u64,
-    #[serde(default)]
-    output_tokens: u64,
-}
-
-#[derive(Deserialize, Default)]
-struct RawCacheCreation {
-    #[serde(default)]
-    ephemeral_5m_input_tokens: u64,
-    #[serde(default)]
-    ephemeral_1h_input_tokens: u64,
-}
-
 /// One deduplicated, priced-later usage record.
 pub struct Record {
     pub ts: DateTime<Utc>,
     pub model: String,
     pub project: String,
     pub session: String,
-    pub input: u64,
-    pub output: u64,
-    pub cache_write: u64,
-    pub cache_write_5m: u64,
-    pub cache_write_1h: u64,
-    pub cache_read: u64,
+    pub billed: Billed,
     pub cost_usd: Option<f64>,
 }
 
@@ -210,25 +172,12 @@ pub fn parse_file(path: &Path, project: &str) -> Vec<(Option<DedupKey>, Record)>
         else {
             continue;
         };
-        let cc = usage.cache_creation.unwrap_or_default();
-        let (input, output) = match usage.iterations.as_deref() {
-            Some(iters) if !iters.is_empty() => (
-                iters.iter().map(|i| i.input_tokens).sum(),
-                iters.iter().map(|i| i.output_tokens).sum(),
-            ),
-            _ => (usage.input_tokens, usage.output_tokens),
-        };
         let record = Record {
             ts: ts.with_timezone(&Utc),
             model,
             project: project.to_string(),
             session: entry.session_id.unwrap_or_else(|| session.clone()),
-            input,
-            output,
-            cache_write: usage.cache_creation_input_tokens,
-            cache_write_5m: cc.ephemeral_5m_input_tokens,
-            cache_write_1h: cc.ephemeral_1h_input_tokens,
-            cache_read: usage.cache_read_input_tokens,
+            billed: usage.billed(),
             cost_usd: entry.cost_usd,
         };
         out.push((dedup_key, record));
@@ -284,10 +233,10 @@ mod tests {
         let recs = parse_str(&format!("{LINE}\n{later}\n"));
         assert_eq!(recs.len(), 1, "same msg id + request id counted once");
         let r = &recs[0];
-        assert_eq!(r.input, 2);
-        assert_eq!(r.output, 515, "later duplicate write replaces earlier");
-        assert_eq!(r.cache_write, 63193);
-        assert_eq!(r.cache_write_1h, 63193);
+        assert_eq!(r.billed.tokens.input, 2);
+        assert_eq!(r.billed.tokens.output, 515, "later duplicate write replaces earlier");
+        assert_eq!(r.billed.tokens.write_1h, 63193);
+        assert_eq!(r.billed.tokens.write_5m, 0);
         assert_eq!(r.project, "proj");
     }
 

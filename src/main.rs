@@ -3,8 +3,7 @@
 //! (github.com/ccusage/ccusage): same data source and report shapes,
 //! static offline pricing, plus exact 5m/1h cache-write tiering.
 
-mod parse;
-mod pricing;
+use ccusage_rs::{parse, pricing};
 
 use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
 use clap::{Parser, Subcommand};
@@ -63,14 +62,15 @@ struct Agg {
 
 impl Agg {
     fn add(&mut self, r: &parse::Record, cost: Option<f64>, into_models: bool) {
-        self.input += r.input;
-        self.output += r.output;
-        self.cache_write += r.cache_write;
-        self.cache_read += r.cache_read;
+        let t = &r.billed.tokens;
+        self.input += t.input;
+        self.output += t.output;
+        self.cache_write += t.write_5m + t.write_1h;
+        self.cache_read += t.read;
         match cost {
             Some(c) => self.cost += c,
             None => {
-                self.unknown_model_tokens += r.input + r.output + r.cache_write + r.cache_read;
+                self.unknown_model_tokens += t.total();
             }
         }
         if self.last_ts.is_none_or(|t| r.ts > t) {
@@ -130,12 +130,7 @@ fn main() {
         };
         // Cost mode "auto": trust a recorded costUSD when present, else
         // calculate from tokens x the static price table.
-        let cost = r.cost_usd.or_else(|| {
-            pricing::cost_usd(
-                &r.model, r.input, r.output, r.cache_write, r.cache_write_5m, r.cache_write_1h,
-                r.cache_read,
-            )
-        });
+        let cost = r.cost_usd.or_else(|| pricing::cost(&r.model, &r.billed).map(|d| d.total()));
         groups.entry(key).or_default().add(r, cost, true);
     }
 
