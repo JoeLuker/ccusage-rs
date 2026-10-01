@@ -9,9 +9,9 @@
 //!    `cache_creation`; any write not covered by the split bills at the
 //!    5-minute rate, the default TTL.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct Tokens {
     pub input: u64,
     pub output: u64,
@@ -42,7 +42,8 @@ impl Tokens {
 
 /// `usage.speed`. Anything other than "standard" or "fast" is kept verbatim
 /// so pricing can refuse it instead of guessing.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Speed {
     #[default]
     Standard,
@@ -50,7 +51,7 @@ pub enum Speed {
     Other(String),
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Billed {
     pub tokens: Tokens,
     pub speed: Speed,

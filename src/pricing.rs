@@ -12,12 +12,13 @@
 //! standard cache multipliers applied on top, per the pricing page.
 
 use crate::usage::{Billed, Speed, Tokens};
+use serde::Serialize;
 
 /// Where every row below was read from, and when.
 pub const SOURCE: &str = "https://platform.claude.com/docs/en/about-claude/pricing";
 pub const VERIFIED: &str = "2026-10-01";
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Price {
     pub input: f64,
     pub write_5m: f64,
@@ -79,7 +80,7 @@ pub fn price(model: &str, speed: &Speed) -> Option<Price> {
 }
 
 /// Dollars per token category.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub struct Dollars {
     pub input: f64,
     pub output: f64,
