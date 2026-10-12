@@ -55,8 +55,17 @@ const ROWS: &[Row] = &[
     Row { id: "claude-sonnet-4-6", standard: p(3.0, 3.75, 6.0, 0.3, 15.0), fast: None },
     Row { id: "claude-sonnet-4-5", standard: p(3.0, 3.75, 6.0, 0.3, 15.0), fast: None },
     Row { id: "claude-sonnet-4", standard: p(3.0, 3.75, 6.0, 0.3, 15.0), fast: None },
+    Row { id: "claude-haiku-5-5", standard: p(0.10, 0.125, 0.20, 0.01, 0.50), fast: None },
     Row { id: "claude-haiku-4-5", standard: p(1.0, 1.25, 2.0, 0.1, 5.0), fast: None },
     Row { id: "claude-3-5-haiku", standard: p(0.8, 1.0, 1.6, 0.08, 4.0), fast: None },
+];
+
+/// Prompts over the threshold bill every token at these rates instead of the
+/// row's standard rates. The threshold is `Tokens::context()`: uncached input,
+/// cache writes and cache reads together. Published on the same pricing page
+/// as the rows above, under Haiku 5.5 "for prompts over 100,000 tokens".
+const LONG_CONTEXT: &[(&str, u64, Price)] = &[
+    ("claude-haiku-5-5", 100_000, p(0.50, 0.625, 1.0, 0.05, 2.50)),
 ];
 
 /// `claude-haiku-4-5-20251001` -> `claude-haiku-4-5`.
@@ -118,7 +127,12 @@ impl Price {
 
 /// What one call cost, or None when it cannot be priced.
 pub fn cost(model: &str, billed: &Billed) -> Option<Dollars> {
-    price(model, &billed.speed).map(|p| p.dollars(&billed.tokens))
+    let id = undated(model);
+    let over = LONG_CONTEXT
+        .iter()
+        .find(|(m, threshold, _)| *m == id && billed.tokens.context() > *threshold)
+        .map(|(_, _, rate)| *rate);
+    over.or_else(|| price(model, &billed.speed)).map(|p| p.dollars(&billed.tokens))
 }
 
 #[cfg(test)]
@@ -181,5 +195,63 @@ mod tests {
         let d = price("claude-opus-5-5", &Speed::Standard).unwrap().dollars(&tokens);
         assert_eq!(d, Dollars { input: 4.0, output: 20.0, write_5m: 0.0, write_1h: 8.0, read: 0.2 });
         assert!((d.total() - 32.2).abs() < 1e-9);
+    }
+
+    fn billed(input: u64, write_1h: u64, read: u64) -> Billed {
+        Billed {
+            tokens: Tokens { input, output: 0, write_5m: 0, write_1h, read },
+            speed: Speed::Standard,
+        }
+    }
+
+    #[test]
+    fn haiku_5_5_standard_rates_up_to_100k_context() {
+        // $0.10 in, $0.50 out, 1h write $0.20, read $0.01 per MTok.
+        let at = cost("claude-haiku-5-5", &billed(100_000, 0, 0)).unwrap();
+        assert!((at.input - 0.01).abs() < 1e-9, "{at:?}");
+        let mixed = cost("claude-haiku-5-5", &billed(0, 50_000, 50_000)).unwrap();
+        assert!((mixed.write_1h - 0.01).abs() < 1e-9, "{mixed:?}");
+        assert!((mixed.read - 0.0005).abs() < 1e-9, "{mixed:?}");
+    }
+
+    #[test]
+    fn haiku_5_5_long_context_tier_bills_every_category_higher() {
+        // One token over the threshold: input at $0.50 per MTok.
+        let over = cost("claude-haiku-5-5", &billed(100_001, 0, 0)).unwrap();
+        assert!((over.input - 0.0500005).abs() < 1e-9, "{over:?}");
+        // Cache reads count toward the threshold: 200k reads alone are over it.
+        let cached = cost("claude-haiku-5-5", &billed(0, 0, 200_000)).unwrap();
+        assert!((cached.read - 0.01).abs() < 1e-9, "{cached:?}");
+    }
+
+    /// Every model id in the last 30 days of local transcripts must price, or
+    /// this fails the build. Without it a new id costs $0 and is hidden in the
+    /// totals. Skips when no transcript was modified in that window.
+    #[test]
+    fn every_model_in_last_30_days_prices() {
+        use std::collections::BTreeSet;
+        let dirs = crate::parse::config_dirs();
+        let cutoff_sys = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 24 * 3600);
+        let files: Vec<_> = crate::parse::discover(&dirs)
+            .into_iter()
+            .filter(|(_, p)| {
+                std::fs::metadata(p)
+                    .and_then(|m| m.modified())
+                    .map(|t| t >= cutoff_sys)
+                    .unwrap_or(false)
+            })
+            .collect();
+        if files.is_empty() {
+            eprintln!("skipped: no transcripts modified in the last 30 days under {dirs:?}");
+            return;
+        }
+        let cutoff_ts = chrono::Utc::now() - chrono::Duration::days(30);
+        let mut unpriced: BTreeSet<String> = BTreeSet::new();
+        for r in crate::parse::parse_all(&files) {
+            if r.ts >= cutoff_ts && price(&r.model, &Speed::Standard).is_none() {
+                unpriced.insert(r.model.clone());
+            }
+        }
+        assert!(unpriced.is_empty(), "models with no price row: {unpriced:?}");
     }
 }
