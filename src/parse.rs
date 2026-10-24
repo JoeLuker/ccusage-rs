@@ -208,7 +208,7 @@ mod tests {
         let dir = test_dir();
         std::fs::create_dir_all(dir.join("projects/proj")).unwrap();
         std::fs::write(dir.join("projects/proj/sess-a.jsonl"), lines).unwrap();
-        let out = parse_all(&discover(&[dir.clone()]));
+        let out = parse_all(&discover(std::slice::from_ref(&dir)));
         std::fs::remove_dir_all(&dir).ok();
         out
     }
@@ -219,7 +219,7 @@ mod tests {
         let deep = dir.join("projects/proj/sess-a/subagents");
         std::fs::create_dir_all(&deep).unwrap();
         std::fs::write(deep.join("agent-x.jsonl"), format!("{LINE}\n")).unwrap();
-        let recs = parse_all(&discover(&[dir.clone()]));
+        let recs = parse_all(&discover(std::slice::from_ref(&dir)));
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].project, "proj", "not the literal 'subagents' dir");
