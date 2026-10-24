@@ -17,7 +17,12 @@
         ccusage-rs = pkgs.rustPlatform.buildRustPackage {
           pname = "ccusage-rs";
           version = "0.1.0";
-          src = self;
+          # This CLI has no embedded assets or external test fixtures.
+          # Documentation and harness changes do not affect its Rust build.
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [ ./Cargo.toml ./Cargo.lock ./src ];
+          };
           cargoLock.lockFile = ./Cargo.lock;
         };
         default = ccusage-rs;
